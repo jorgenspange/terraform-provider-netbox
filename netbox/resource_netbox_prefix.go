@@ -1,7 +1,9 @@
 package netbox
 
 import (
+	"errors"
 	"strconv"
+	"time"
 
 	"github.com/fbreckle/go-netbox/netbox/client/ipam"
 	"github.com/fbreckle/go-netbox/netbox/models"
@@ -175,7 +177,12 @@ func resourceNetboxPrefixRead(d *schema.ResourceData, m interface{}) error {
 	id, _ := strconv.ParseInt(d.Id(), 10, 64)
 	params := ipam.NewIpamPrefixesReadParams().WithID(id)
 
-	res, err := api.Ipam.IpamPrefixesRead(params, nil)
+	var res *ipam.IpamPrefixesReadOK
+	err := retryOnRetryable(func() error {
+		var readErr error
+		res, readErr = api.Ipam.IpamPrefixesRead(params, nil)
+		return readErr
+	})
 	if err != nil {
 		if errresp, ok := err.(*ipam.IpamPrefixesReadDefault); ok {
 			errorcode := errresp.Code()
@@ -252,6 +259,50 @@ func resourceNetboxPrefixRead(d *schema.ResourceData, m interface{}) error {
 	return nil
 }
 
+// retryOnRetryable retries the given function on transient NetBox or network errors (HTTP 429/5xx) with simple backoff.
+func retryOnRetryable(fn func() error) error {
+	const maxAttempts = 6
+	var err error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+
+		if !isRetryableError(err) || attempt == maxAttempts {
+			return err
+		}
+
+		// simple linear backoff
+		time.Sleep(time.Duration(attempt) * time.Second)
+	}
+
+	return err
+}
+
+func isRetryableError(err error) bool {
+	var coder interface {
+		Code() int
+	}
+	if errors.As(err, &coder) {
+		code := coder.Code()
+		if code == 429 || (code >= 500 && code < 600) {
+			return true
+		}
+	}
+
+	// Fallback: check for temporary network errors
+	var temporary interface {
+		Temporary() bool
+	}
+	if errors.As(err, &temporary) && temporary.Temporary() {
+		return true
+	}
+
+	return false
+}
+
 func resourceNetboxPrefixUpdate(d *schema.ResourceData, m interface{}) error {
 	api := m.(*providerState)
 	id, _ := strconv.ParseInt(d.Id(), 10, 64)
@@ -323,10 +374,14 @@ func resourceNetboxPrefixUpdate(d *schema.ResourceData, m interface{}) error {
 	}
 
 	params := ipam.NewIpamPrefixesUpdateParams().WithID(id).WithData(&data)
-	_, err = api.Ipam.IpamPrefixesUpdate(params, nil)
+	err = retryOnRetryable(func() error {
+		_, updateErr := api.Ipam.IpamPrefixesUpdate(params, nil)
+		return updateErr
+	})
 	if err != nil {
 		return err
 	}
+
 	return resourceNetboxPrefixRead(d, m)
 }
 

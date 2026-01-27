@@ -1,11 +1,14 @@
 package netbox
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	netboxclient "github.com/fbreckle/go-netbox/netbox/client"
+	"github.com/go-openapi/runtime"
 	httptransport "github.com/go-openapi/runtime/client"
 	"github.com/goware/urlx"
 	log "github.com/sirupsen/logrus"
@@ -20,6 +23,24 @@ type Config struct {
 	RequestTimeout              int
 	StripTrailingSlashesFromURL bool
 	CACertFile                  string
+}
+
+// interfaceTextConsumer can decode text/* payloads into an interface{} payload without failing.
+// This keeps NetBox responses with a text content-type (e.g. error pages) from tripping up the swagger client.
+type interfaceTextConsumer struct{}
+
+func (c interfaceTextConsumer) Consume(r io.Reader, data interface{}) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	if v, ok := data.(*interface{}); ok {
+		*v = string(raw)
+		return nil
+	}
+
+	return runtime.TextConsumer().Consume(io.NopCloser(bytes.NewReader(raw)), data)
 }
 
 // customHeaderTransport is a transport that adds the specified headers on
@@ -82,6 +103,9 @@ func (cfg *Config) Client() (*netboxclient.NetBoxAPI, error) {
 
 	transport := httptransport.NewWithClient(parsedURL.Host, parsedURL.Path+netboxclient.DefaultBasePath, desiredRuntimeClientSchemes, httpClient)
 	transport.DefaultAuthentication = httptransport.APIKeyAuth("Authorization", "header", fmt.Sprintf("Token %v", cfg.APIToken))
+	textConsumer := interfaceTextConsumer{}
+	transport.Consumers["text/plain"] = textConsumer
+	transport.Consumers["text/html"] = textConsumer
 	transport.SetLogger(log.StandardLogger())
 	netboxClient := netboxclient.New(transport, nil)
 

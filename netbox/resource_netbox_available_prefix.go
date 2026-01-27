@@ -91,6 +91,10 @@ func resourceNetboxAvailablePrefix() *schema.Resource {
 				Type:     schema.TypeInt,
 				Optional: true,
 			},
+			"interface": {
+				Type:     schema.TypeInt,
+				Optional: true,
+			},
 			customFieldsKey: customFieldsSchema,
 			tagsKey:         tagsSchema,
 		},
@@ -152,5 +156,9 @@ func resourceNetboxAvailablePrefixCreate(d *schema.ResourceData, m interface{}) 
 	d.SetId(strconv.FormatInt(payload.ID, 10))
 	d.Set("prefix", payload.Prefix)
 
-	return resourceNetboxPrefixUpdate(d, m)
+	if err := resourceNetboxPrefixUpdate(d, m); err != nil {
+		return err
+	}
+
+	return resourceNetboxPrefixRead(d, m)
 }
